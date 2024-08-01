@@ -3,8 +3,6 @@ Tool to softclip reads in bam files based on amplicon primers
 
 ## Installation
 
-## Installation
-
 1. Clone this repository and ``cd Ampliclip``
 2. ``conda env create -f environment.yml --name ampliclip``
 3. ``conda activate ampliclip``
