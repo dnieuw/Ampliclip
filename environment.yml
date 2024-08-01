@@ -1,3 +1,4 @@
+name: ampliclip
 channels:
   - conda-forge
   - bioconda
