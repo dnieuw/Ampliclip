@@ -4,8 +4,11 @@ from ampliclip import __version__
 setup(name='squirrel',
     version=__version__,
     packages=find_packages(),
-    scripts=['ampliclip/ampliclip.py'],
-    package_data={"ampliclip":["data/*"]},
+    entry_points={
+        'console_scripts': [
+            'ampliclip=ampliclip.__main__:main',
+        ]
+    },
     install_requires=[
         'biopython>=1.70',
         'pysam>=0.20'
