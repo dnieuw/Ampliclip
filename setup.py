@@ -6,7 +6,7 @@ setup(name='ampliclip',
     packages=find_packages(),
     entry_points={
         'console_scripts': [
-            'ampliclip=ampliclip.__main__:main',
+            'ampliclip=ampliclip.ampliclip:main',
         ]
     },
     install_requires=[
