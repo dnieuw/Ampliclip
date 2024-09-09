@@ -291,6 +291,6 @@ def main():
             if trimmed_read:
                 _ = outfastq.write(trimmed_read)
 
+args = parser.parse_args()
 if __name__ == "__main__":
-    args = parser.parse_args()
     main()
