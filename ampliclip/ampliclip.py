@@ -170,7 +170,7 @@ def clip_read(read, n_clip, side):
     if side == 'left':
         read.reference_start = read.reference_start + n_clip
 
-def trim_read(read):
+def trim_read(args, read):
     '''
     Trims softclipped nucleotides of the reads from the left and right side and returns read in fastq format.
     '''
@@ -197,7 +197,7 @@ def trim_read(read):
 
     return(f"@{read_name}\n{read_sequence}\n+\n{read_qualities}\n")
 
-def find_primer_position(primer, reference):
+def find_primer_position(args, primer, reference):
     
     def generate_unambiguous_variants(query):
         #Create list of variable and non-variable positions 
@@ -260,6 +260,7 @@ def find_primer_position(primer, reference):
     return(regions)
 
 def main():
+    args = parser.parse_args()
 
     primer_records = list(SeqIO.parse(args.primerfile, "fasta"))
     reference = SeqIO.read(args.referencefile, "fasta")
@@ -270,7 +271,7 @@ def main():
         if not ((args.fwdkey in primer.id) | (args.revkey in primer.id)):
             raise ValueError("Neither "+args.fwdkey+" nor "+args.revkey+" could be found in "+primer.id+" which is necessary to determine its orientation")
 
-        for region in find_primer_position(primer, reference):
+        for region in find_primer_position(args, primer, reference):
             trim_regions.append(region)
 
     with pysam.AlignmentFile(args.infile, "rb") as infile, pysam.AlignmentFile(args.outfile, "wb", header=infile.header) as outfile, open(args.outfastq, "w") as outfastq:
@@ -287,10 +288,9 @@ def main():
                         print(region)
                         raise(e)
             _ = outfile.write(read)
-            trimmed_read = trim_read(read)
+            trimmed_read = trim_read(args, read)
             if trimmed_read:
                 _ = outfastq.write(trimmed_read)
 
-args = parser.parse_args()
 if __name__ == "__main__":
     main()
