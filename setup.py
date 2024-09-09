@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 from ampliclip import __version__
 
-setup(name='squirrel',
+setup(name='ampliclip',
     version=__version__,
     packages=find_packages(),
     entry_points={
