@@ -277,7 +277,7 @@ def main():
     with pysam.AlignmentFile(args.infile, "rb") as infile, pysam.AlignmentFile(args.outfile, "wb", header=infile.header) as outfile, open(args.outfastq, "w") as outfastq:
         for read in infile.fetch():
             for region in trim_regions:
-                if read.is_unmapped:
+                if read.is_unmapped | read.is_secondary | read.is_supplementary:
                     continue
                 overlap = calculate_overlap(read, region, padding=args.padding)
                 if overlap > 0:
