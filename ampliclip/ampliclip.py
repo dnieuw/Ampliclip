@@ -208,22 +208,24 @@ def find_primer_position(args, primer, reference):
         variants = [Seq.Seq(''.join(var)) for var in variants]
         return(variants)
 
-    def create_region_from_alignment(alignment):
-        aln_ref, aln_str, aln_primer, _ = str(alignment).split("\n")
-        #Find the aligned region
-        start, end = re.search("[ACTGRYWSMKHBDVXN-]+", aln_primer).span()
-        return(Region(start, end, strand))
-
     def find_alignment_regions(variants):
         regions = []
         for var in variants:
             for aln in aligner.align(target, var):
                 if (aln.score + allowed_mismatch) >= len(query):
-                    regions.append(create_region_from_alignment(aln))
+                    start, end = aln.coordinates[0]
+                    if strand == "right": #Shift by 1 for the right size primer because of 0 indexing
+                        regions.append(Region(start+1, end+1, strand))
+                    else:
+                        regions.append(Region(start, end, strand))
             #Also check reverse complement
             for aln in aligner.align(target, var.reverse_complement()):
                 if (aln.score + allowed_mismatch) >= len(query):
-                    regions.append(create_region_from_alignment(aln))
+                    start, end = aln.coordinates[0]
+                    if strand == "right": #Shift by 1 for the right size primer because of 0 indexing
+                        regions.append(Region(start+1, end+1, strand))
+                    else:
+                        regions.append(Region(start, end, strand))
         return(regions)
     
     query = primer.upper().seq
@@ -253,7 +255,6 @@ def find_primer_position(args, primer, reference):
         variants = [query]
 
     regions = find_alignment_regions(variants)
-
     if len(regions) == 0:
         print("Could not find a good match between "+primer.id+" and "+reference.id)
     
