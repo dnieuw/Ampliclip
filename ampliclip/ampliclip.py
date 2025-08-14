@@ -268,6 +268,10 @@ def main():
     primer_records = list(SeqIO.parse(args.primerfile, "fasta"))
     reference = SeqIO.read(args.referencefile, "fasta")
 
+    primer_order = []
+    for primer in primer_records:
+        primer_order.append(primer.id)
+
     trim_regions = []
 
     for primer in primer_records:
@@ -327,9 +331,9 @@ def main():
     if not primer_clip_counts:
         print("No primers caused any clipping events.")
     else:
-        # Sort primers by the number of times they caused a clip, descending
-        sorted_primers = sorted(primer_clip_counts.items(), key=lambda item: item[1], reverse=True)
-        for primer_id, count in sorted_primers:
+        # Maintain original primer sorting
+        for primer_id in primer_order:
+            count = primer_clip_counts.get(primer_id, 0)
             print(f"{primer_id:<30} {count}") # Adjusted for nice alignment
     
     print("--- End of Summary ---")
