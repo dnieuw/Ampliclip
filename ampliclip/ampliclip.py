@@ -2,6 +2,7 @@ import argparse
 import pysam
 import re
 import itertools
+from collections import defaultdict
 from Bio import SeqIO, Seq
 from Bio.Data.IUPACData import ambiguous_dna_values
 from Bio.Align import PairwiseAligner
@@ -73,10 +74,11 @@ parser.add_argument('-m',
 
 class Region(object):
     """Primer alignment region class"""
-    def __init__(self, start, end, strand):
+    def __init__(self, start, end, strand, primer_id):
         self.start = int(start)
         self.end = int(end)
         self.strand = strand
+        self.primer_id = primer_id
 
 def calculate_overlap(read, primer, padding):
     """Determines overlap between aligned read and primer object"""
@@ -215,17 +217,17 @@ def find_primer_position(args, primer, reference):
                 if (aln.score + allowed_mismatch) >= len(query):
                     start, end = aln.coordinates[0]
                     if strand == "right": #Shift by 1 for the right size primer because of 0 indexing
-                        regions.append(Region(start+1, end+1, strand))
+                        regions.append(Region(start+1, end+1, strand, primer.id))
                     else:
-                        regions.append(Region(start, end, strand))
+                        regions.append(Region(start, end, strand, primer.id))
             #Also check reverse complement
             for aln in aligner.align(target, var.reverse_complement()):
                 if (aln.score + allowed_mismatch) >= len(query):
                     start, end = aln.coordinates[0]
                     if strand == "right": #Shift by 1 for the right size primer because of 0 indexing
-                        regions.append(Region(start+1, end+1, strand))
+                        regions.append(Region(start+1, end+1, strand, primer.id))
                     else:
-                        regions.append(Region(start, end, strand))
+                        regions.append(Region(start, end, strand, primer.id))
         return(regions)
     
     query = primer.upper().seq
@@ -266,6 +268,10 @@ def main():
     primer_records = list(SeqIO.parse(args.primerfile, "fasta"))
     reference = SeqIO.read(args.referencefile, "fasta")
 
+    primer_order = []
+    for primer in primer_records:
+        primer_order.append(primer.id)
+
     trim_regions = []
 
     for primer in primer_records:
@@ -275,24 +281,62 @@ def main():
         for region in find_primer_position(args, primer, reference):
             trim_regions.append(region)
 
+    # Initialize counters
+    total_reads_processed = 0
+    reads_clipped_count = 0
+    primer_clip_counts = defaultdict(int)
+
     with pysam.AlignmentFile(args.infile, "rb") as infile, pysam.AlignmentFile(args.outfile, "wb", header=infile.header) as outfile, open(args.outfastq, "w") as outfastq:
         for read in infile.fetch():
             if read.is_unmapped | read.is_secondary | read.is_supplementary:
                 continue
+            
+            # Increment total read counter and set up a flag for this read
+            total_reads_processed += 1
+            read_was_clipped = False
+
             for region in trim_regions:
                 
                 overlap = calculate_overlap(read, region, padding=args.padding)
                 if overlap > 0:
                     try:
                         clip_read(read, overlap, region.strand)
+                        # If a clip happened, set flag and count the primer
+                        read_was_clipped = True
+                        primer_clip_counts[region.primer_id] += 1
                     except Exception as e:
                         print(read)
                         print(region)
                         raise(e)
+            # Increment the clipped read counter if the flag was set
+            if read_was_clipped:
+                reads_clipped_count += 1
+
             _ = outfile.write(read)
             trimmed_read = trim_read(args, read)
             if trimmed_read:
                 _ = outfastq.write(trimmed_read)
+
+    # Print the final summary statistics
+    print("--- Ampliclip Run Summary ---")
+    print(f"Total reads processed: {total_reads_processed}")
+
+    if total_reads_processed > 0:
+        percent_clipped = (reads_clipped_count / total_reads_processed) * 100
+        print(f"Reads clipped: {reads_clipped_count} ({percent_clipped:.2f}%)")
+    else:
+        print("Reads clipped: 0 (0.00%)")
+    
+    print("\n--- Clipping events by primer ---")
+    if not primer_clip_counts:
+        print("No primers caused any clipping events.")
+    else:
+        # Maintain original primer sorting
+        for primer_id in primer_order:
+            count = primer_clip_counts.get(primer_id, 0)
+            print(f"{primer_id:<30} {count}") # Adjusted for nice alignment
+    
+    print("--- End of Summary ---")
 
 if __name__ == "__main__":
     main()
