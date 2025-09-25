@@ -2,6 +2,8 @@ import argparse
 import pysam
 import re
 import itertools
+import logging
+from datetime import datetime
 from collections import defaultdict
 from Bio import SeqIO, Seq
 from Bio.Data.IUPACData import ambiguous_dna_values
@@ -71,6 +73,24 @@ parser.add_argument('-m',
                 default=2,
                 type=int,
                required = False)
+
+parser.add_argument('-log',
+                '--logfile',
+                help="Name of logfile",
+                default = datetime.now().strftime("logfile_%d-%m-%Y.log"),
+                type=str,
+                required = False)
+
+parser.add_argument('-stats',
+            '--trimstats',
+            help='File with stats about primers and trimming',
+            type=str,
+            required=False)
+
+parser.add_argument('--quiet',
+                    action='store_true',
+                    default = False,
+                    required = False)
 
 class Region(object):
     """Primer alignment region class"""
@@ -262,8 +282,47 @@ def find_primer_position(args, primer, reference):
     
     return(regions)
 
+def log_summary(total_reads_processed, reads_clipped_count, primer_clip_counts, primer_order):
+
+    if total_reads_processed > 0:
+        percent_clipped = (reads_clipped_count / total_reads_processed) * 100
+    else:
+        percent_clipped = 0
+
+    logging.info(f"--- Ampliclip Run Summary ---\nTotal reads processed: {total_reads_processed}\nReads clipped: {reads_clipped_count} ({percent_clipped:.2f}%)")
+
+    if not primer_clip_counts:
+        logging.info("""--- Clipping events by primer ---
+        No primers caused any clipping events...""")
+    else:
+        log_text = []
+        for primer_id in primer_order:
+            count = primer_clip_counts.get(primer_id, 0)
+            log_text.append(f"{primer_id:<30} {count}")
+        log_text = '\n'.join(log_text)
+        logging.info(f"--- Clipping events by primer ---\n{log_text}")
+
+    logging.info("--- End of Summary ---")
+
 def main():
     args = parser.parse_args()
+
+    if args.quiet:
+        logging.basicConfig(handlers=[
+                                logging.FileHandler(args.logfile),
+                                logging.StreamHandler()
+                            ],
+                            level=logging.CRITICAL,
+                            format='%(levelname)s %(asctime)s %(message)s',
+                            datefmt='%Y-%m-%d %H:%M:%S')
+    else:
+        logging.basicConfig(handlers=[
+                                logging.FileHandler(args.logfile),
+                                logging.StreamHandler()
+                            ],
+                            level=logging.INFO,
+                            format='%(levelname)s %(asctime)s %(message)s',
+                            datefmt='%Y-%m-%d %H:%M:%S')
 
     primer_records = list(SeqIO.parse(args.primerfile, "fasta"))
     reference = SeqIO.read(args.referencefile, "fasta")
@@ -274,6 +333,8 @@ def main():
 
     trim_regions = []
 
+    logging.info("Aligning primers to reference...")
+    
     for primer in primer_records:
         if not ((args.fwdkey in primer.id) | (args.revkey in primer.id)):
             raise ValueError("Neither "+args.fwdkey+" nor "+args.revkey+" could be found in "+primer.id+" which is necessary to determine its orientation")
@@ -285,6 +346,8 @@ def main():
     total_reads_processed = 0
     reads_clipped_count = 0
     primer_clip_counts = defaultdict(int)
+
+    logging.info("Trimming primers...")
 
     with pysam.AlignmentFile(args.infile, "rb") as infile, pysam.AlignmentFile(args.outfile, "wb", header=infile.header) as outfile, open(args.outfastq, "w") as outfastq:
         for read in infile.fetch():
@@ -317,26 +380,7 @@ def main():
             if trimmed_read:
                 _ = outfastq.write(trimmed_read)
 
-    # Print the final summary statistics
-    print("--- Ampliclip Run Summary ---")
-    print(f"Total reads processed: {total_reads_processed}")
-
-    if total_reads_processed > 0:
-        percent_clipped = (reads_clipped_count / total_reads_processed) * 100
-        print(f"Reads clipped: {reads_clipped_count} ({percent_clipped:.2f}%)")
-    else:
-        print("Reads clipped: 0 (0.00%)")
-    
-    print("\n--- Clipping events by primer ---")
-    if not primer_clip_counts:
-        print("No primers caused any clipping events.")
-    else:
-        # Maintain original primer sorting
-        for primer_id in primer_order:
-            count = primer_clip_counts.get(primer_id, 0)
-            print(f"{primer_id:<30} {count}") # Adjusted for nice alignment
-    
-    print("--- End of Summary ---")
+    log_summary(total_reads_processed, reads_clipped_count, primer_clip_counts, primer_order)
 
 if __name__ == "__main__":
     main()
