@@ -3,6 +3,7 @@ import pysam
 import re
 import itertools
 import logging
+from ampliclip import __version__
 from datetime import datetime
 from collections import defaultdict
 from Bio import SeqIO, Seq
@@ -77,7 +78,6 @@ parser.add_argument('-m',
 parser.add_argument('-log',
                 '--logfile',
                 help="Name of logfile",
-                default = datetime.now().strftime("logfile_%d-%m-%Y.log"),
                 type=str,
                 required = False)
 
@@ -91,6 +91,12 @@ parser.add_argument('--quiet',
                     action='store_true',
                     default = False,
                     required = False)
+
+parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}"
+    )
 
 class Region(object):
     """Primer alignment region class"""
@@ -307,20 +313,24 @@ def log_summary(total_reads_processed, reads_clipped_count, primer_clip_counts, 
 def main():
     args = parser.parse_args()
 
+    handlers = []
+
+    # Console handler
+    console_handler = logging.StreamHandler()
     if args.quiet:
-        logging.basicConfig(handlers=[
-                                logging.FileHandler(args.logfile),
-                                logging.StreamHandler()
-                            ],
-                            level=logging.CRITICAL,
-                            format='%(levelname)s %(asctime)s %(message)s',
-                            datefmt='%Y-%m-%d %H:%M:%S')
+        console_handler.setLevel(logging.CRITICAL)  # suppress INFO
     else:
-        logging.basicConfig(handlers=[
-                                logging.FileHandler(args.logfile),
-                                logging.StreamHandler()
-                            ],
-                            level=logging.INFO,
+        console_handler.setLevel(logging.INFO)
+    handlers.append(console_handler)
+
+    # File handler (always INFO, full logs)
+    if args.logfile:
+        file_handler = logging.FileHandler(args.logfile, mode="w")
+        file_handler.setLevel(logging.INFO)
+        handlers.append(file_handler)
+
+    logging.basicConfig(level=logging.DEBUG,
+                            handlers=handlers,
                             format='%(levelname)s %(asctime)s %(message)s',
                             datefmt='%Y-%m-%d %H:%M:%S')
 
