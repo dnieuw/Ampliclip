@@ -148,44 +148,43 @@ def clip_read(read, n_clip, side):
     if side == "right":
         current_cigar.reverse()
 
-    #Expand cigarstring
-    cigar_expanded = ''.join([j*str(i) for i,j in current_cigar])
+    #Expand cigarstring - use list for efficiency
+    cigar_expanded = []
+    for i, j in current_cigar:
+        cigar_expanded.extend([i] * j)
 
     #Clip cigar until no more "clip" left:
     clip_leftover = n_clip
     n = 0
-    cigar_replacement = ''
     while clip_leftover > 0:
-        cig = int(cigar_expanded[n])
+        cig = cigar_expanded[n]
         if cig == 0:
-            cigar_replacement += "4" #Replace matches with softclipped base
+            cigar_expanded[n] = 4  #Replace matches with softclipped base
             clip_leftover -= 1
         elif cig == 1:
-            cigar_replacement += "4" #Replace insertions with softclipped base
+            cigar_expanded[n] = 4  #Replace insertions with softclipped base
         elif cig == 2:
-            n_clip += 1 #Increase n_clip to increase reference_start shift at the end in case of deletions
+            n_clip += 1  #Increase n_clip to increase reference_start shift at the end in case of deletions
         elif cig == 4:
-            cigar_replacement += "4" #Do not replace softclipped
+            pass  #Do not replace softclipped
         elif cig == 5:
-            cigar_replacement += "5" #Do not replace hardclipped
+            pass  #Do not replace hardclipped
         else:
             raise ValueError("Something went wrong: do not know how to clip " + str(cig) + " in cigarstring")
         n += 1
 
-    cigar_expanded = cigar_replacement + cigar_expanded[n:]
-
     #Recreate tuples:
     clipped_cigar = []
     c = 0
-    nprev=cigar_expanded[0]
+    nprev = cigar_expanded[0]
     for n in cigar_expanded:
-        if n==nprev:
-            c+=1
+        if n == nprev:
+            c += 1
         else:
-            clipped_cigar.append((int(nprev),c))
-            c=1
-            nprev=n
-    clipped_cigar.append((int(n),c))
+            clipped_cigar.append((nprev, c))
+            c = 1
+            nprev = n
+    clipped_cigar.append((n, c))
 
     #Un-reverse cigar if clipped on right side
     if side == 'right':
@@ -205,7 +204,8 @@ def trim_read(args, read):
 
     read_name = read.qname
     read_sequence = read.query_sequence
-    read_qualities = ''.join(map(lambda x: chr( x+33 ), read.query_qualities))
+    # Optimize quality score conversion using list comprehension
+    read_qualities = ''.join([chr(x + 33) for x in read.query_qualities])
 
     #Trim left region
     if read.cigartuples[0][0] == 4:
@@ -225,15 +225,43 @@ def trim_read(args, read):
 
     return(f"@{read_name}\n{read_sequence}\n+\n{read_qualities}\n")
 
+# Create a cached aligner object to reuse across all primer alignments
+_cached_aligner = None
+
+def get_aligner():
+    """Return a cached PairwiseAligner object for reuse"""
+    global _cached_aligner
+    if _cached_aligner is None:
+        _cached_aligner = PairwiseAligner()
+        _cached_aligner.mode = 'local'
+        _cached_aligner.match_score = 1
+        _cached_aligner.mismatch_score = 0
+        _cached_aligner.open_gap_score = -100  # Don't allow gaps
+        _cached_aligner.extend_gap_score = -100  # Don't allow gaps
+    return _cached_aligner
+
 def find_primer_position(args, primer, reference):
     
     def generate_unambiguous_variants(query):
         #Create list of variable and non-variable positions 
         tuples_list = [[i for i in ambiguous_dna_values[j]] for j in query]
-        #Create all combinations of all variants
-        variants = list(itertools.product(*tuples_list))
-        #Combine into strings and create Seq object
-        variants = [Seq.Seq(''.join(var)) for var in variants]
+        
+        # Calculate total number of variants to avoid exponential explosion
+        total_variants = 1
+        for options in tuples_list:
+            total_variants *= len(options)
+            # Limit to prevent exponential explosion (e.g., 1000 variants max)
+            if total_variants > 1000:
+                logging.warning(f"Primer {primer.id} has too many ambiguous bases ({total_variants} variants). "
+                               "Using only first 1000 variants for alignment.")
+                break
+        
+        #Create all combinations of all variants (limit to prevent memory issues)
+        variants = []
+        for i, var in enumerate(itertools.product(*tuples_list)):
+            if i >= 1000:  # Stop after 1000 variants
+                break
+            variants.append(Seq.Seq(''.join(var)))
         return(variants)
 
     def find_alignment_regions(variants):
@@ -268,13 +296,8 @@ def find_primer_position(args, primer, reference):
 
     allowed_mismatch = args.mismatch
 
-    #Setup aligner object
-    aligner = PairwiseAligner()
-    aligner.mode = 'local'
-    aligner.match_score = 1
-    aligner.mismatch_score = 0
-    aligner.open_gap_score = -100 #I Don't allow gaps
-    aligner.extend_gap_score = -100 #I Don't allow gaps
+    # Use cached aligner object instead of creating new one
+    aligner = get_aligner()
 
     #Check for ambiguous positions in the primer
     if any([nt in AMBIGUOUS_DNA_LETTERS for nt in query]):
@@ -368,19 +391,32 @@ def main():
             total_reads_processed += 1
             read_was_clipped = False
 
-            for region in trim_regions:
+            # Check if read overlaps with any primer region before detailed processing
+            # Quick boundary check to skip reads that don't overlap any region
+            if trim_regions:
+                read_start = read.reference_start
+                read_end = read.reference_end
+                has_potential_overlap = False
                 
-                overlap = calculate_overlap(read, region, padding=args.padding)
-                if overlap > 0:
-                    try:
-                        clip_read(read, overlap, region.strand)
-                        # If a clip happened, set flag and count the primer
-                        read_was_clipped = True
-                        primer_clip_counts[region.primer_id] += 1
-                    except Exception as e:
-                        print(read)
-                        print(region)
-                        raise(e)
+                for region in trim_regions:
+                    # Quick range check with padding
+                    if not (read_end < region.start - args.padding or read_start > region.end + args.padding):
+                        has_potential_overlap = True
+                        break
+                
+                if has_potential_overlap:
+                    for region in trim_regions:
+                        overlap = calculate_overlap(read, region, padding=args.padding)
+                        if overlap > 0:
+                            try:
+                                clip_read(read, overlap, region.strand)
+                                # If a clip happened, set flag and count the primer
+                                read_was_clipped = True
+                                primer_clip_counts[region.primer_id] += 1
+                            except Exception as e:
+                                print(read)
+                                print(region)
+                                raise(e)
             # Increment the clipped read counter if the flag was set
             if read_was_clipped:
                 reads_clipped_count += 1
