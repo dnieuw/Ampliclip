@@ -288,7 +288,7 @@ def find_primer_position(args, primer, reference):
     
     return(regions)
 
-def log_summary(total_reads_processed, reads_clipped_count, primer_clip_counts, primer_order):
+def log_summary(total_reads_processed, reads_clipped_count, primer_clip_counts, primer_order, primer_coordinates):
 
     if total_reads_processed > 0:
         percent_clipped = (reads_clipped_count / total_reads_processed) * 100
@@ -302,9 +302,19 @@ def log_summary(total_reads_processed, reads_clipped_count, primer_clip_counts, 
         No primers caused any clipping events...""")
     else:
         log_text = []
+        # Add header for the columns
+        log_text.append(f"{'Primer ID':<30} {'Count':<10} {'Position':<15}")
+        
         for primer_id in primer_order:
             count = primer_clip_counts.get(primer_id, 0)
-            log_text.append(f"{primer_id:<30} {count}")
+            # Retrieve coordinates, using set to remove duplicates if variants mapped to same location
+            coords = list(set(primer_coordinates.get(primer_id, ["N/A"])))
+            # Sort for consistency
+            coords.sort() 
+            coords_str = ",".join(coords)
+            
+            log_text.append(f"{primer_id:<30} {count:<10} {coords_str}")
+            
         log_text = '\n'.join(log_text)
         logging.info(f"--- Clipping events by primer ---\n{log_text}")
 
@@ -342,6 +352,8 @@ def main():
         primer_order.append(primer.id)
 
     trim_regions = []
+    # Dictionary to store coordinates for the log summary
+    primer_coordinates = defaultdict(list)
 
     logging.info("Aligning primers to reference...")
     
@@ -351,6 +363,8 @@ def main():
 
         for region in find_primer_position(args, primer, reference):
             trim_regions.append(region)
+            # Store the coordinate range found for this primer
+            primer_coordinates[region.primer_id].append(f"{region.start}-{region.end}")
 
     # Initialize counters
     total_reads_processed = 0
@@ -390,7 +404,7 @@ def main():
             if trimmed_read:
                 _ = outfastq.write(trimmed_read)
 
-    log_summary(total_reads_processed, reads_clipped_count, primer_clip_counts, primer_order)
+    log_summary(total_reads_processed, reads_clipped_count, primer_clip_counts, primer_order, primer_coordinates)
 
 if __name__ == "__main__":
     main()
