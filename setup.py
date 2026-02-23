@@ -1,5 +1,4 @@
 from setuptools import setup, find_packages
-from ampliclip import __version__
 
 setup(name='ampliclip',
     version=__version__,
