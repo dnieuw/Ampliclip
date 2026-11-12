@@ -1,5 +1,5 @@
 # Ampliclip
-Tool to softclip reads in bam files based on amplicon primers
+Tool to softclip single or paired reads in bam files based on amplicon primers
 
 ## Installation
 
@@ -11,7 +11,8 @@ Tool to softclip reads in bam files based on amplicon primers
 ## Full usage
 
 ```
-usage: ampliclip [-h] -i INFILE -o OUTFILE -fq OUTFASTQ [-l MINLENGTH] -p
+usage: ampliclip [-h] -i INFILE -o OUTFILE [-fq OUTFASTQ]
+                    [-fq1 OUTFASTQ1] [-fq2 OUTFASTQ2] [-l MINLENGTH] -p
                     PRIMERFILE -r REFERENCEFILE -fwd FWDKEY -rev REVKEY
                     [-x PADDING] [-m MISMATCH]
 
@@ -23,6 +24,10 @@ optional arguments:
                         Output bamfile
   -fq OUTFASTQ, --outfastq OUTFASTQ
                         Output fastq file for trimmed reads
+  -fq1 OUTFASTQ1, --outfastq1 OUTFASTQ1
+                        Output trimmed R1 FASTQ (requires -fq2; excludes -fq)
+  -fq2 OUTFASTQ2, --outfastq2 OUTFASTQ2
+                        Output trimmed R2 FASTQ (requires -fq1; excludes -fq)
   -l MINLENGTH, --minlength MINLENGTH
                         Minimum length of fastq read after trimming allowed
   -p PRIMERFILE, --primerfile PRIMERFILE
@@ -42,3 +47,7 @@ optional arguments:
   -t THREADS, --threads
                         Number of threads for BAM I/O
 ```
+
+Use either `-fq OUTFASTQ` (single-read mode), or **both**
+`-fq1 OUTFASTQ1` and `-fq2 OUTFASTQ2` (paired-end mode). Mixing modes or supplying
+only one mate output is an error.

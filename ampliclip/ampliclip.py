@@ -3,6 +3,10 @@ import pysam
 import re
 import itertools
 import logging
+import os
+import sqlite3
+import tempfile
+from contextlib import ExitStack, closing
 from ampliclip import __version__
 from datetime import datetime
 from collections import defaultdict
@@ -28,7 +32,12 @@ parser.add_argument('-fq',
             '--outfastq',
             help='Output fastq file for trimmed reads',
             type=str,
-            required=True)
+            required=False)
+
+parser.add_argument('-fq1', '--outfastq1', type=str,
+                    help='Output trimmed R1 FASTQ (requires -fq2; excludes -fq)')
+parser.add_argument('-fq2', '--outfastq2', type=str,
+                    help='Output trimmed R2 FASTQ (requires -fq1; excludes -fq)')
 
 parser.add_argument('-l', 
                 '--minlength',
@@ -209,10 +218,26 @@ def clip_read(read, n_clip, side):
         # Shift reference start by the number of clipped bases + any deletions we passed
         read.reference_start = read.reference_start + n_clip + ref_shift
 
-def trim_read(args, read):
+def trim_read(args, read, paired=False):
     '''
     Trims softclipped nucleotides of the reads from the left and right side and returns read in fastq format.
     '''
+
+    if paired:
+        # BAM stores reverse-strand reads in reference orientation. Slice in
+        # that orientation first, then restore both sequence and quality order.
+        if read.query_sequence is None or read.query_qualities is None:
+            return None
+        start, end = read.query_alignment_start, read.query_alignment_end
+        sequence = read.query_sequence[start:end]
+        qualities = read.query_qualities[start:end]
+        if not sequence or (args.minlength and len(sequence) < args.minlength):
+            return None
+        if read.is_reverse:
+            sequence = str(Seq.Seq(sequence).reverse_complement())
+            qualities = qualities[::-1]
+        quality_string = ''.join(chr(q + 33) for q in qualities)
+        return f"@{read.query_name}\n{sequence}\n+\n{quality_string}\n"
 
     read_name = read.qname
     read_sequence = read.query_sequence
@@ -331,8 +356,79 @@ def log_summary(total_reads_processed, reads_clipped_count, primer_clip_counts, 
 
     logging.info("--- End of Summary ---")
 
+def parse_args(argv=None):
+    args = parser.parse_args(argv)
+    paired = args.outfastq1 is not None or args.outfastq2 is not None
+    if paired:
+        if args.outfastq:
+            parser.error('-fq cannot be combined with -fq1 or -fq2')
+        if not args.outfastq1 or not args.outfastq2:
+            parser.error('paired-end output requires both -fq1 and -fq2')
+    elif not args.outfastq:
+        parser.error('provide -fq, or both -fq1 and -fq2')
+    # Reject aliases before opening anything for writing (including symlinks
+    # and existing hard links).
+    if paired:
+        inputs = [args.infile, args.primerfile, args.referencefile]
+        outputs = [args.outfile, args.outfastq1, args.outfastq2]
+        if args.logfile:
+            outputs.append(args.logfile)
+        def same_file(a, b):
+            return (os.path.realpath(a) == os.path.realpath(b) or
+                    (os.path.exists(a) and os.path.exists(b) and os.path.samefile(a, b)))
+        for index, output in enumerate(outputs):
+            if any(same_file(output, other) for other in inputs + outputs[:index]):
+                parser.error('output paths must be distinct and must not overwrite inputs')
+    return args
+
+
+class PairedFastqWriter:
+    """Disk-backed mate matching, independent of BAM sort order.
+
+    Keep even rejected records until finalization so duplicate primary mate
+    records are detected rather than paired arbitrarily.
+    """
+    def __init__(self, connection, r1, r2):
+        self.db = connection
+        self.r1, self.r2 = r1, r2
+        self.skipped = 0
+        self.db.execute('CREATE TABLE mates (name TEXT, rg TEXT, mate INTEGER, '
+                        'fastq TEXT, PRIMARY KEY (name, rg, mate))')
+
+    def add(self, read, fastq):
+        if not read.is_paired or read.is_read1 == read.is_read2 or not read.query_name:
+            self.skipped += 1
+            return
+        mate = 1 if read.is_read1 else 2
+        rg = read.get_tag('RG') if read.has_tag('RG') else ''
+        try:
+            self.db.execute('INSERT INTO mates VALUES (?, ?, ?, ?)',
+                            (read.query_name, rg, mate, fastq))
+        except sqlite3.IntegrityError as exc:
+            raise ValueError('Duplicate primary R{} for read {!r} (RG {!r})'
+                             .format(mate, read.query_name, rg)) from exc
+
+    def finish(self):
+        self.db.commit()
+        pairs = 0
+        for r1, r2 in self.db.execute(
+                'SELECT a.fastq, b.fastq FROM mates a JOIN mates b '
+                'ON a.name = b.name AND a.rg = b.rg '
+                'WHERE a.mate = 1 AND b.mate = 2 '
+                'AND a.fastq IS NOT NULL AND b.fastq IS NOT NULL ORDER BY a.rowid'):
+            self.r1.write(r1)
+            self.r2.write(r2)
+            pairs += 1
+        templates = self.db.execute(
+            'SELECT COUNT(*) FROM (SELECT name, rg FROM mates GROUP BY name, rg)'
+        ).fetchone()[0]
+        logging.info('Paired FASTQ: %s pairs written; %s incomplete or filtered '
+                     'templates omitted; %s records with invalid/missing mate flags skipped',
+                     pairs, templates - pairs, self.skipped)
+
+
 def main():
-    args = parser.parse_args()
+    args = parse_args()
 
     handlers = []
 
@@ -384,11 +480,25 @@ def main():
 
     logging.info("Trimming primers...")
 
-    with pysam.AlignmentFile(args.infile, "rb", threads=args.threads) as infile, \
-         pysam.AlignmentFile(args.outfile, "wb", header=infile.header, threads=args.threads) as outfile, \
-         open(args.outfastq, "w") as outfastq:
+    paired = args.outfastq1 is not None
+    with ExitStack() as stack:
+        infile = stack.enter_context(pysam.AlignmentFile(args.infile, "rb", threads=args.threads))
+        outfile = stack.enter_context(pysam.AlignmentFile(
+            args.outfile, "wb", header=infile.header, threads=args.threads))
+        if paired:
+            r1 = stack.enter_context(open(args.outfastq1, 'w'))
+            r2 = stack.enter_context(open(args.outfastq2, 'w'))
+            tempdir = stack.enter_context(tempfile.TemporaryDirectory(prefix='ampliclip-'))
+            db = stack.enter_context(closing(sqlite3.connect(os.path.join(tempdir, 'mates.db'))))
+            pair_writer = PairedFastqWriter(db, r1, r2)
+        else:
+            outfastq = stack.enter_context(open(args.outfastq, 'w'))
         for read in infile:
-            if read.is_unmapped | read.is_secondary | read.is_supplementary:
+            if read.is_secondary or read.is_supplementary:
+                continue
+            if read.is_unmapped:
+                if paired:
+                    pair_writer.add(read, None)
                 continue
             
             # Increment total read counter and set up a flag for this read
@@ -415,9 +525,14 @@ def main():
                 reads_clipped_count += 1
 
             _ = outfile.write(read)
-            trimmed_read = trim_read(args, read)
-            if trimmed_read:
+            trimmed_read = trim_read(args, read, paired=paired)
+            if paired:
+                pair_writer.add(read, trimmed_read)
+            elif trimmed_read:
                 _ = outfastq.write(trimmed_read)
+
+        if paired:
+            pair_writer.finish()
 
     log_summary(total_reads_processed, reads_clipped_count, primer_clip_counts, primer_order, primer_coordinates)
 
